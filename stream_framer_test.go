@@ -21,7 +21,7 @@ var _ = Describe("Stream Framer", func() {
 	var (
 		retransmittedFrame1, retransmittedFrame2 *wire.StreamFrame
 		framer                                   *streamFramer
-		stream1, stream2                         *MockStreamI
+		stream1, stream2                         *MockSendStreamI
 		streamGetter                             *MockStreamGetter
 	)
 
@@ -36,9 +36,9 @@ var _ = Describe("Stream Framer", func() {
 			Data:     []byte{0xDE, 0xCA, 0xFB, 0xAD},
 		}
 
-		stream1 = NewMockStreamI(mockCtrl)
+		stream1 = NewMockSendStreamI(mockCtrl)
 		stream1.EXPECT().StreamID().Return(protocol.StreamID(5)).AnyTimes()
-		stream2 = NewMockStreamI(mockCtrl)
+		stream2 = NewMockSendStreamI(mockCtrl)
 		stream2.EXPECT().StreamID().Return(protocol.StreamID(6)).AnyTimes()
 
 		framer = newStreamFramer(nil, streamGetter, versionGQUICFrames)
@@ -93,7 +93,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("returns normal frames", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
 			f := &wire.StreamFrame{
 				StreamID: id1,
 				Data:     []byte("foobar"),
@@ -106,8 +106,8 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("skips a stream that was reported active, but was completed shortly after", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(nil, errors.New("stream was already deleted"))
-			streamGetter.EXPECT().GetOrOpenStream(id2).Return(stream2, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(nil, errors.New("stream was already deleted"))
+			streamGetter.EXPECT().GetOrOpenSendStream(id2).Return(stream2, nil)
 			f := &wire.StreamFrame{
 				StreamID: id2,
 				Data:     []byte("foobar"),
@@ -119,8 +119,8 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("skips a stream that was reported active, but doesn't have any data", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
-			streamGetter.EXPECT().GetOrOpenStream(id2).Return(stream2, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id2).Return(stream2, nil)
 			f := &wire.StreamFrame{
 				StreamID: id2,
 				Data:     []byte("foobar"),
@@ -133,7 +133,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("pops from a stream multiple times, if it has enough data", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil).Times(2)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil).Times(2)
 			f1 := &wire.StreamFrame{StreamID: id1, Data: []byte("foobar")}
 			f2 := &wire.StreamFrame{StreamID: id1, Data: []byte("foobaz")}
 			stream1.EXPECT().popStreamFrame(gomock.Any()).Return(f1, true)
@@ -146,8 +146,8 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("re-queues a stream at the end, if it has enough data", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil).Times(2)
-			streamGetter.EXPECT().GetOrOpenStream(id2).Return(stream2, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil).Times(2)
+			streamGetter.EXPECT().GetOrOpenSendStream(id2).Return(stream2, nil)
 			f11 := &wire.StreamFrame{StreamID: id1, Data: []byte("foobar")}
 			f12 := &wire.StreamFrame{StreamID: id1, Data: []byte("foobaz")}
 			f2 := &wire.StreamFrame{StreamID: id2, Data: []byte("raboof")}
@@ -162,8 +162,8 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("only dequeues data from each stream once per packet", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
-			streamGetter.EXPECT().GetOrOpenStream(id2).Return(stream2, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id2).Return(stream2, nil)
 			f1 := &wire.StreamFrame{StreamID: id1, Data: []byte("foobar")}
 			f2 := &wire.StreamFrame{StreamID: id2, Data: []byte("raboof")}
 			// both streams have more data, and will be re-queued
@@ -175,8 +175,8 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("returns multiple normal frames in the order they were reported active", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
-			streamGetter.EXPECT().GetOrOpenStream(id2).Return(stream2, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id2).Return(stream2, nil)
 			f1 := &wire.StreamFrame{Data: []byte("foobar")}
 			f2 := &wire.StreamFrame{Data: []byte("foobaz")}
 			stream1.EXPECT().popStreamFrame(gomock.Any()).Return(f1, false)
@@ -187,7 +187,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("only asks a stream for data once, even if it was reported active multiple times", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
 			f := &wire.StreamFrame{Data: []byte("foobar")}
 			stream1.EXPECT().popStreamFrame(gomock.Any()).Return(f, false) // only one call to this function
 			framer.AddActiveStream(id1)
@@ -196,7 +196,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("returns retransmission frames before normal frames", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
 			framer.AddActiveStream(id1)
 			f1 := &wire.StreamFrame{Data: []byte("foobar")}
 			stream1.EXPECT().popStreamFrame(gomock.Any()).Return(f1, false)
@@ -211,7 +211,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("pops frames that have the minimum size", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
 			stream1.EXPECT().popStreamFrame(protocol.MinStreamFrameSize).Return(&wire.StreamFrame{Data: []byte("foobar")}, false)
 			framer.AddActiveStream(id1)
 			framer.PopStreamFrames(protocol.MinStreamFrameSize)
@@ -223,7 +223,7 @@ var _ = Describe("Stream Framer", func() {
 		})
 
 		It("stops iterating when the remaining size is smaller than the minimum STREAM frame size", func() {
-			streamGetter.EXPECT().GetOrOpenStream(id1).Return(stream1, nil)
+			streamGetter.EXPECT().GetOrOpenSendStream(id1).Return(stream1, nil)
 			// pop a frame such that the remaining size is one byte less than the minimum STREAM frame size
 			f := &wire.StreamFrame{
 				StreamID: id1,
