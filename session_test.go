@@ -877,6 +877,34 @@ var _ = Describe("Session", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		It("sends multiple packets", func() {
+			sess.queueControlFrame(&wire.MaxDataFrame{ByteOffset: 1})
+			sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+			sph.EXPECT().DequeuePacketForRetransmission().Times(2)
+			sph.EXPECT().GetAlarmTimeout().AnyTimes()
+			sph.EXPECT().GetLeastUnacked().AnyTimes()
+			sph.EXPECT().ShouldSendRetransmittablePacket().Times(2)
+			sph.EXPECT().SentPacket(gomock.Any()).Times(2)
+			sph.EXPECT().TimeUntilSend()             // for checking if we're congestion limited
+			sph.EXPECT().TimeUntilSend().Do(func() { // after sending the first packet
+				// make sure there's something to send
+				sess.queueControlFrame(&wire.MaxDataFrame{ByteOffset: 2})
+			})
+			sph.EXPECT().TimeUntilSend().Return(time.Hour).Times(2)
+			sess.sentPacketHandler = sph
+			done := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				sess.run()
+				close(done)
+			}()
+			sess.scheduleSending()
+			Eventually(mconn.written).Should(HaveLen(2))
+			// make the go routine return
+			sess.Close(nil)
+			Eventually(done).Should(BeClosed())
+		})
+
 		It("sends public reset", func() {
 			err := sess.sendPublicReset(1)
 			Expect(err).NotTo(HaveOccurred())
@@ -1130,33 +1158,6 @@ var _ = Describe("Session", func() {
 		})
 	})
 
-	It("retransmits RTO packets", func() {
-		sess.packer.hasSentPacket = true // make sure this is not the first packet the packer sends
-		sess.sentPacketHandler.SetHandshakeComplete()
-		n := protocol.PacketNumber(10)
-		sess.packer.cryptoSetup = &mockCryptoSetup{encLevelSeal: protocol.EncryptionForwardSecure}
-		// We simulate consistently low RTTs, so that the test works faster
-		rtt := time.Millisecond
-		sess.rttStats.UpdateRTT(rtt, 0, time.Now())
-		Expect(sess.rttStats.SmoothedRTT()).To(Equal(rtt)) // make sure it worked
-		sess.packer.packetNumberGenerator.next = n + 1
-		// Now, we send a single packet, and expect that it was retransmitted later
-		err := sess.sentPacketHandler.SentPacket(&ackhandler.Packet{
-			PacketNumber: n,
-			Length:       1,
-			Frames: []wire.Frame{&wire.StreamFrame{
-				Data: []byte("foobar"),
-			}},
-			EncryptionLevel: protocol.EncryptionForwardSecure,
-		})
-		Expect(err).NotTo(HaveOccurred())
-		go sess.run()
-		defer sess.Close(nil)
-		sess.scheduleSending()
-		Eventually(func() int { return len(mconn.written) }).ShouldNot(BeZero())
-		Expect(mconn.written).To(Receive(ContainSubstring("foobar")))
-	})
-
 	Context("scheduling sending", func() {
 		BeforeEach(func() {
 			sess.packer.hasSentPacket = true // make sure this is not the first packet the packer sends
@@ -1168,31 +1169,20 @@ var _ = Describe("Session", func() {
 			sess.packer.cryptoSetup = &mockCryptoSetup{encLevelSeal: protocol.EncryptionForwardSecure}
 		})
 
-		It("sends after writing to a stream", func(done Done) {
+		It("sends after writing to a stream", func() {
 			Expect(sess.sendingScheduled).NotTo(Receive())
 			s, err := sess.GetOrOpenStream(3)
 			Expect(err).NotTo(HaveOccurred())
+			done := make(chan struct{})
 			go func() {
-				s.Write([]byte("foobar"))
+				defer GinkgoRecover()
+				_, err := s.Write([]byte("foobar"))
+				Expect(err).ToNot(HaveOccurred())
 				close(done)
 			}()
 			Eventually(sess.sendingScheduled).Should(Receive())
 			s.(*stream).popStreamFrame(1000) // unblock
-		})
-
-		It("sets the timer to the ack timer", func() {
-			rph := mockackhandler.NewMockReceivedPacketHandler(mockCtrl)
-			rph.EXPECT().GetAckFrame().Return(&wire.AckFrame{LargestAcked: 0x1337})
-			rph.EXPECT().GetAlarmTimeout().Return(time.Now().Add(10 * time.Millisecond)).MinTimes(1)
-			sess.receivedPacketHandler = rph
-			go func() {
-				defer GinkgoRecover()
-				sess.run()
-			}()
-			defer sess.Close(nil)
-			time.Sleep(10 * time.Millisecond)
-			Eventually(func() int { return len(mconn.written) }).ShouldNot(BeZero())
-			Expect(mconn.written).To(Receive(ContainSubstring(string([]byte{0x13, 0x37}))))
+			Eventually(done).Should(BeClosed())
 		})
 
 		Context("bundling of small packets", func() {

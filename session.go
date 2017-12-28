@@ -343,7 +343,7 @@ func (s *session) run() error {
 	}()
 
 	var closeErr closeError
-	var sentPacket bool // was a packet sent the last time the run loop ran
+	var pacingDeadline time.Time
 	aeadChanged := s.aeadChanged
 
 runLoop:
@@ -355,7 +355,8 @@ runLoop:
 		default:
 		}
 
-		s.maybeResetTimer(sentPacket)
+		s.maybeResetTimer(pacingDeadline)
+		pacingDeadline = time.Time{}
 
 		select {
 		case closeErr = <-s.closeChan:
@@ -408,16 +409,28 @@ runLoop:
 			s.keepAlivePingSent = true
 		}
 
-		if s.sentPacketHandler.TimeUntilSend() == utils.InfDuration {
+		pacingDelay := s.sentPacketHandler.TimeUntilSend()
+		switch pacingDelay {
+		case 0: // send packets as long as there's data to send, and as long as the pacing allows immediate seding
+			for {
+				sentPacket, err := s.sendPacket()
+				if err != nil {
+					s.closeLocal(err)
+					break
+				}
+				pacingDelay = s.sentPacketHandler.TimeUntilSend()
+				if !sentPacket || pacingDelay != 0 {
+					break
+				}
+			}
+		case utils.InfDuration: // congestion limited
+			// try sending an ACK, even if we're congestion limited
 			if err := s.maybeSendAckOnlyPacket(); err != nil {
 				s.closeLocal(err)
 			}
-		} else {
-			var err error
-			sentPacket, err = s.sendPacket()
-			if err != nil {
-				s.closeLocal(err)
-			}
+		}
+		if pacingDelay != 0 {
+			pacingDeadline = now.Add(pacingDelay)
 		}
 
 		if !s.receivedTooManyUndecrytablePacketsTime.IsZero() && s.receivedTooManyUndecrytablePacketsTime.Add(protocol.PublicResetTimeout).Before(now) && len(s.undecryptablePackets) != 0 {
@@ -449,7 +462,7 @@ func (s *session) Context() context.Context {
 	return s.ctx
 }
 
-func (s *session) maybeResetTimer(usePacing bool) {
+func (s *session) maybeResetTimer(pacingDeadline time.Time) {
 	var deadline time.Time
 	if s.config.KeepAlive && s.handshakeComplete && !s.keepAlivePingSent {
 		deadline = s.lastNetworkActivityTime.Add(s.peerParams.IdleTimeout / 2)
@@ -470,8 +483,8 @@ func (s *session) maybeResetTimer(usePacing bool) {
 	if !s.receivedTooManyUndecrytablePacketsTime.IsZero() {
 		deadline = utils.MinTime(deadline, s.receivedTooManyUndecrytablePacketsTime.Add(protocol.PublicResetTimeout))
 	}
-	if usePacing {
-		deadline = utils.MinTime(deadline, time.Now().Add(s.sentPacketHandler.TimeUntilSend()))
+	if !pacingDeadline.IsZero() {
+		deadline = utils.MinTime(deadline, pacingDeadline)
 	}
 
 	s.timer.Reset(deadline)
@@ -942,7 +955,7 @@ func (s *session) tryQueueingUndecryptablePacket(p *receivedPacket) {
 		// if this is the first time the undecryptablePackets runs full, start the timer to send a Public Reset
 		if s.receivedTooManyUndecrytablePacketsTime.IsZero() {
 			s.receivedTooManyUndecrytablePacketsTime = time.Now()
-			s.maybeResetTimer(false)
+			s.maybeResetTimer(time.Time{})
 		}
 		utils.Infof("Dropping undecrytable packet 0x%x (undecryptable packet queue full)", p.header.PacketNumber)
 		return
