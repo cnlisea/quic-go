@@ -34,6 +34,7 @@ var ErrDuplicateOrOutOfOrderAck = errors.New("SentPacketHandler: Duplicate or ou
 
 type sentPacketHandler struct {
 	lastSentPacketNumber protocol.PacketNumber
+	lastPacketSentTime   time.Time
 	skippedPackets       []protocol.PacketNumber
 
 	numNonRetransmittablePackets int // number of non-retransmittable packets since the last retransmittable packet
@@ -115,8 +116,9 @@ func (h *sentPacketHandler) SentPacket(packet *Packet) error {
 		}
 	}
 
-	h.lastSentPacketNumber = packet.PacketNumber
 	now := time.Now()
+	h.lastSentPacketNumber = packet.PacketNumber
+	h.lastPacketSentTime = now
 
 	var largestAcked protocol.PacketNumber
 	if len(packet.Frames) > 0 {
@@ -376,6 +378,10 @@ func (h *sentPacketHandler) SendingAllowed() bool {
 	// to RTOs, but we currently don't have a nice way of distinguishing them.
 	haveRetransmissions := len(h.retransmissionQueue) > 0
 	return !maxTrackedLimited && (!congestionLimited || haveRetransmissions)
+}
+
+func (h *sentPacketHandler) TimeUntilSend() time.Time {
+	return h.lastPacketSentTime.Add(h.congestion.TimeUntilSend(h.bytesInFlight))
 }
 
 func (h *sentPacketHandler) retransmitOldestTwoPackets() {
