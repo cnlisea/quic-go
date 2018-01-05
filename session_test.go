@@ -947,20 +947,6 @@ var _ = Describe("Session", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(mconn.written).To(HaveLen(1))
 			})
-
-			It("doesn't retransmit handshake packets when the handshake is complete", func() {
-				sess.handshakeComplete = true
-				sf := &wire.StreamFrame{StreamID: 1, Data: []byte("foobar")}
-				sph.EXPECT().DequeuePacketForRetransmission().Return(
-					&ackhandler.Packet{
-						Frames:          []wire.Frame{sf},
-						EncryptionLevel: protocol.EncryptionSecure,
-					})
-				sph.EXPECT().DequeuePacketForRetransmission()
-				err := sess.sendPacket()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(mconn.written).To(BeEmpty())
-			})
 		})
 
 		Context("for packets after the handshake", func() {
